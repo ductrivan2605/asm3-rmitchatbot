@@ -1,6 +1,7 @@
-# RMIT Enrolment Advisor Chatbot
-# Author: Enhanced for RMIT Student Enrolment Support
-# Updated: May 2025
+# Enhanced RMIT Enrolment Advisor Chatbot
+# Author: Enhanced RM-AI-T HELPER
+# Features: Database Integration, Advanced Web Scraping, Chat History
+# Updated: June 2025
 
 import streamlit as st
 import json
@@ -8,21 +9,25 @@ import boto3
 import os
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from PyPDF2 import PdfReader
 from pathlib import Path
 from dotenv import load_dotenv
 import pandas as pd
 from bs4 import BeautifulSoup
 import urllib.parse
+import sqlite3
+import hashlib
+import uuid
+from typing import List, Dict, Optional
+import xml.etree.ElementTree as ET
 
 # Load environment variables
 load_dotenv()
 
-# === Configuration Labels (Modify these if needed) === #
+# === Configuration Labels === #
 APP_TITLE = "RMIT CONNECT HELPER"
-APP_SUBTITLE = "Your intelligent assistant for RMIT services and academic support ☝️🤓"
-CHAT_PLACEHOLDER = "Ask me anything about RMIT enrolment, courses, deadlines, or academic policies..."
+APP_SUBTITLE = "Your intelligent assistant for RMIT services and academic support 🤓"
 PROCESSING_MESSAGE = "Processing your question... 🤔"
 SUCCESS_MESSAGE = "Response generated successfully 🗿"
 ERROR_MESSAGE = "An error occurred. Please try again. 😭"
@@ -36,12 +41,303 @@ APP_CLIENT_ID = os.getenv("APP_CLIENT_ID")
 USERNAME = os.getenv("AWS_USERNAME")
 PASSWORD = os.getenv("AWS_PASSWORD")
 
-# === Knowledge Base Configuration === #
+# === Database Configuration === #
+DB_PATH = "rmit_chatbot.db"
 KNOWLEDGE_BASE_DIR = "knowledge_base"
 
-# === Helper: Get AWS Credentials === #
-def get_credentials(username, password):
-    """Authenticate with AWS Cognito and return credentials"""
+# === Database Schema and Operations === #
+class DatabaseManager:
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize SQLite database with required tables"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Chat sessions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    session_name TEXT
+                )
+            ''')
+            
+            # Chat messages table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    message_type TEXT CHECK(message_type IN ('user', 'assistant')),
+                    content TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    tokens_used INTEGER,
+                    response_time REAL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id)
+                )
+            ''')
+            
+            # Knowledge base table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS knowledge_base (
+                    kb_id TEXT PRIMARY KEY,
+                    source_type TEXT CHECK(source_type IN ('web', 'pdf', 'manual')),
+                    source_url TEXT,
+                    title TEXT,
+                    content TEXT,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    content_hash TEXT,
+                    is_active BOOLEAN DEFAULT 1
+                )
+            ''')
+            
+            # User feedback table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_feedback (
+                    feedback_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    message_id TEXT,
+                    rating INTEGER CHECK(rating BETWEEN 1 AND 5),
+                    feedback_text TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id),
+                    FOREIGN KEY (message_id) REFERENCES chat_messages (message_id)
+                )
+            ''')
+            
+            conn.commit()
+    
+    def create_session(self, user_id: str = "anonymous") -> str:
+        """Create a new chat session"""
+        session_id = str(uuid.uuid4())
+        session_name = f"Chat Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO chat_sessions (session_id, user_id, session_name)
+                VALUES (?, ?, ?)
+            ''', (session_id, user_id, session_name))
+            conn.commit()
+        
+        return session_id
+    
+    def save_message(self, session_id: str, message_type: str, content: str, 
+                    tokens_used: int = 0, response_time: float = 0.0) -> str:
+        """Save a chat message to database"""
+        message_id = str(uuid.uuid4())
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO chat_messages 
+                (message_id, session_id, message_type, content, tokens_used, response_time)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (message_id, session_id, message_type, content, tokens_used, response_time))
+            
+            # Update last activity
+            cursor.execute('''
+                UPDATE chat_sessions 
+                SET last_activity = CURRENT_TIMESTAMP 
+                WHERE session_id = ?
+            ''', (session_id,))
+            
+            conn.commit()
+        
+        return message_id
+    
+    def get_chat_history(self, session_id: str, limit: int = 10) -> List[Dict]:
+        """Retrieve chat history for a session"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT message_type, content, timestamp 
+                FROM chat_messages 
+                WHERE session_id = ? 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            ''', (session_id, limit))
+            
+            messages = []
+            for row in cursor.fetchall():
+                messages.append({
+                    'role': row[0],
+                    'content': row[1],
+                    'timestamp': row[2]
+                })
+            
+            return list(reversed(messages))  # Return in chronological order
+    
+    def save_knowledge_item(self, source_type: str, source_url: str, title: str, 
+                          content: str) -> str:
+        """Save knowledge base item"""
+        kb_id = str(uuid.uuid4())
+        content_hash = hashlib.md5(content.encode()).hexdigest()
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Check if content already exists
+            cursor.execute('''
+                SELECT kb_id FROM knowledge_base 
+                WHERE content_hash = ? AND is_active = 1
+            ''', (content_hash,))
+            
+            if cursor.fetchone():
+                return "duplicate"
+            
+            cursor.execute('''
+                INSERT INTO knowledge_base 
+                (kb_id, source_type, source_url, title, content, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (kb_id, source_type, source_url, title, content, content_hash))
+            
+            conn.commit()
+        
+        return kb_id
+    
+    def get_knowledge_base(self, limit: int = 100) -> List[Dict]:
+        """Retrieve active knowledge base items"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT source_type, source_url, title, content, last_updated
+                FROM knowledge_base 
+                WHERE is_active = 1 
+                ORDER BY last_updated DESC 
+                LIMIT ?
+            ''', (limit,))
+            
+            items = []
+            for row in cursor.fetchall():
+                items.append({
+                    'source_type': row[0],
+                    'source_url': row[1],
+                    'title': row[2],
+                    'content': row[3],
+                    'last_updated': row[4]
+                })
+            
+            return items
+
+# Initialize database manager
+db_manager = DatabaseManager()
+
+# === Enhanced Web Scraping with Sitemap === #
+class RMITWebScraper:
+    def __init__(self):
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        self.base_url = "https://www.rmit.edu.au"
+        self.sitemap_url = "https://www.rmit.edu.au/sitemap.xml"
+    
+    def get_sitemap_urls(self, keywords: List[str] = None) -> List[str]:
+        """Extract relevant URLs from RMIT sitemap"""
+        try:
+            response = requests.get(self.sitemap_url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            
+            root = ET.fromstring(response.content)
+            urls = []
+            
+            # Default keywords for RMIT student services
+            if not keywords:
+                keywords = [
+                    'enrolment', 'enrollment', 'courses', 'programs', 'fees', 
+                    'students', 'support', 'academic', 'deadlines', 'dates'
+                ]
+            
+            # Extract URLs containing relevant keywords
+            for url_elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
+                loc_elem = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
+                if loc_elem is not None:
+                    url = loc_elem.text
+                    if any(keyword in url.lower() for keyword in keywords):
+                        urls.append(url)
+            
+            return urls[:20]  # Limit to first 20 relevant URLs
+            
+        except Exception as e:
+            st.warning(f"Could not fetch sitemap: {str(e)}")
+            return self._get_fallback_urls()
+    
+    def _get_fallback_urls(self) -> List[str]:
+        """Fallback URLs if sitemap fails"""
+        return [
+            "https://www.rmit.edu.au/students/my-course/enrolment",
+            "https://www.rmit.edu.au/students/student-essentials/fees-and-payments",
+            "https://www.rmit.edu.au/students/student-essentials/important-dates",
+            "https://www.rmit.edu.au/students/support-and-facilities/student-support",
+            "https://www.rmit.edu.au/students/support-services/study-support",
+            "https://www.rmit.edu.au/study-with-us/levels-of-study/undergraduate-study",
+            "https://www.rmit.edu.au/study-with-us/levels-of-study/postgraduate-study"
+        ]
+    
+    def scrape_page(self, url: str) -> Dict:
+        """Scrape individual RMIT page"""
+        try:
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style", "nav", "footer", "header"]):
+                script.decompose()
+            
+            # Extract content
+            title = soup.find('title')
+            title_text = title.get_text().strip() if title else "RMIT Page"
+            
+            # Get main content
+            main_content = (
+                soup.find('main') or 
+                soup.find('div', class_='content') or 
+                soup.find('div', {'id': 'content'}) or
+                soup.find('body')
+            )
+            
+            content_text = ""
+            if main_content:
+                # Extract text from relevant elements
+                for element in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'li', 'div']):
+                    text = element.get_text(strip=True)
+                    if text and len(text) > 20:  # Filter short text
+                        content_text += f"{text}\n"
+            
+            # Clean content
+            content_text = re.sub(r'\s+', ' ', content_text.strip())
+            content_text = re.sub(r'[^\w\s\-.,!?():$%&]', '', content_text)
+            
+            return {
+                'url': url,
+                'title': title_text,
+                'content': content_text,
+                'scraped_at': datetime.now().isoformat(),
+                'success': True
+            }
+            
+        except Exception as e:
+            return {
+                'url': url,
+                'title': f"Error scraping {url}",
+                'content': f"Failed to scrape: {str(e)}",
+                'scraped_at': datetime.now().isoformat(),
+                'success': False
+            }
+
+# Initialize web scraper
+scraper = RMITWebScraper()
+
+# === Cached AWS Credentials === #
+@st.cache_resource(ttl=3000)  # Cache for 50 minutes (TTL is 1 hour)
+def get_cached_credentials(username: str, password: str) -> Optional[Dict]:
+    """Get cached AWS credentials with automatic refresh"""
     try:
         idp_client = boto3.client("cognito-idp", region_name=REGION)
         response = idp_client.initiate_auth(
@@ -67,323 +363,133 @@ def get_credentials(username, password):
         st.error(f"Authentication failed: {str(e)}")
         return None
 
-# === Helper: Extract text from PDFs === #
-def extract_text_from_pdfs(pdf_paths):
-    """Extract text from multiple PDF files"""
-    all_text = []
-    for pdf_path in pdf_paths:
-        try:
-            with open(pdf_path, 'rb') as file:
-                reader = PdfReader(file)
-                pdf_text = []
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        pdf_text.append(text.strip())
-                all_text.append({
-                    'source': pdf_path,
-                    'content': "\n\n".join(pdf_text)
-                })
-        except Exception as e:
-            all_text.append({
-                'source': pdf_path,
-                'content': f"[Error reading file {pdf_path}: {str(e)}]"
-            })
-    return all_text
+# === Enhanced Knowledge Base Management === #
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def load_enhanced_knowledge_base() -> List[Dict]:
+    """Load knowledge base with database integration and web scraping"""
+    
+    # First, try to load from database
+    db_knowledge = db_manager.get_knowledge_base()
+    
+    # If database is empty or outdated, refresh from web
+    if not db_knowledge or should_refresh_knowledge():
+        st.info("🔄 Refreshing knowledge base from RMIT website...")
+        refresh_knowledge_base()
+        db_knowledge = db_manager.get_knowledge_base()
+    
+    return db_knowledge
 
-# === Data Cleaning Function === #
-def clean_knowledge_data(raw_data):
-    """Clean and preprocess knowledge base data including web-scraped content"""
-    cleaned_data = []
-    
-    for item in raw_data:
-        if isinstance(item, dict):
-            # Handle web-scraped data
-            if 'url' in item and 'content' in item:
-                # Clean web content
-                cleaned_web_item = {
-                    'source': 'web',
-                    'url': item['url'],
-                    'title': item.get('title', 'RMIT Web Page'),
-                    'last_updated': item.get('last_updated', ''),
-                    'content': []
-                }
-                
-                # Process web content
-                for content_item in item.get('content', []):
-                    if isinstance(content_item, dict) and 'text' in content_item:
-                        text = content_item['text']
-                        # Clean web text
-                        text = re.sub(r'\s+', ' ', text.strip())
-                        text = re.sub(r'[^\w\s\-.,!?():$%]', '', text)
-                        if len(text) > 20:  # Only keep substantial content
-                            cleaned_web_item['content'].append({
-                                'type': content_item.get('type', 'text'),
-                                'text': text
-                            })
-                
-                if cleaned_web_item['content']:
-                    cleaned_data.append(cleaned_web_item)
-                    
-            else:
-                # Handle regular dictionary data
-                cleaned_item = {k: v for k, v in item.items() if v is not None and str(v).strip()}
-                
-                # Clean text content
-                for key, value in cleaned_item.items():
-                    if isinstance(value, str):
-                        # Remove excessive whitespace
-                        value = re.sub(r'\s+', ' ', value.strip())
-                        # Remove special characters that might interfere with processing
-                        value = re.sub(r'[^\w\s\-.,!?():]', '', value)
-                        # Standardize course codes (e.g., COSC1111, INTE2402)
-                        value = re.sub(r'\b([A-Z]{4})(\d{4})\b', r'\1\2', value)
-                        cleaned_item[key] = value
-                
-                if cleaned_item:  # Only add non-empty items
-                    cleaned_data.append(cleaned_item)
-        
-        elif isinstance(item, str):
-            # Clean string data
-            cleaned_text = re.sub(r'\s+', ' ', item.strip())
-            cleaned_text = re.sub(r'[^\w\s\-.,!?():]', '', cleaned_text)
-            if cleaned_text:
-                cleaned_data.append(cleaned_text)
-    
-    return cleaned_data
-
-# === Prompt Tuning Function === #
-def tune_prompt_for_context(base_prompt, user_question, context_type="general"):
-    """Enhance prompt based on question type and context"""
-    
-    # Analyze user question to determine intent
-    question_lower = user_question.lower()
-    
-    # Define prompt enhancements based on question type
-    if any(word in question_lower for word in ['enrol', 'enrollment', 'enrolment', 'register']):
-        context_enhancement = """
-        Focus on enrolment procedures, deadlines, requirements, and step-by-step guidance.
-        Provide specific actionable steps and mention relevant deadlines.
-        """
-    elif any(word in question_lower for word in ['course', 'subject', 'unit']):
-        context_enhancement = """
-        Focus on course information, prerequisites, descriptions, and academic planning.
-        Help with course selection and academic pathway guidance.
-        """
-    elif any(word in question_lower for word in ['deadline', 'date', 'when']):
-        context_enhancement = """
-        Emphasize important dates, deadlines, and time-sensitive information.
-        Provide specific dates and time frames where available.
-        """
-    elif any(word in question_lower for word in ['fee', 'cost', 'payment', 'financial']):
-        context_enhancement = """
-        Focus on financial information, fees, payment options, and financial support.
-        Provide clear cost breakdowns and payment deadlines.
-        """
-    else:
-        context_enhancement = """
-        Provide comprehensive assistance covering all aspects of RMIT enrolment and academic support.
-        """
-    
-    enhanced_prompt = f"""
-{base_prompt}
-
-CONTEXT GUIDANCE:
-{context_enhancement}
-
-RESPONSE GUIDELINES:
-- Be specific and actionable
-- Include relevant links or contact information when helpful
-- Use clear, student-friendly language
-- Organize information with bullet points or steps when appropriate
-- Always verify information is current and accurate
-
-USER QUESTION: {user_question}
-"""
-    
-    return enhanced_prompt
-
-# === Dynamic Web Scraping Function === #
-def scrape_rmit_website(url, max_retries=3):
-    """Scrape RMIT website for real-time data"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Extract relevant content
-            content_data = {
-                'url': url,
-                'title': soup.find('title').get_text() if soup.find('title') else 'No title',
-                'last_updated': datetime.now().isoformat(),
-                'content': []
-            }
-            
-            # Extract main content areas
-            main_content = soup.find('main') or soup.find('div', class_='content') or soup.find('body')
-            
-            if main_content:
-                # Extract headings and paragraphs
-                for element in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'li', 'div']):
-                    text = element.get_text(strip=True)
-                    if text and len(text) > 10:  # Filter out very short text
-                        content_data['content'].append({
-                            'type': element.name,
-                            'text': text
-                        })
-            
-            return content_data
-            
-        except requests.RequestException as e:
-            if attempt < max_retries - 1:
-                continue
-            return {
-                'url': url,
-                'error': f"Failed to scrape after {max_retries} attempts: {str(e)}",
-                'last_updated': datetime.now().isoformat(),
-                'content': []
-            }
-
-# === Load Knowledge Base === #
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def load_knowledge_base():
-    """Load and process knowledge base from various sources including real-time web data"""
-    knowledge_data = []
-    
-    # === 1. DYNAMIC WEB SCRAPING === #
-    rmit_urls = [
-        "https://www.rmit.edu.au/students/my-course/enrolment",
-        "https://www.rmit.edu.au/students/student-essentials/fees-and-payments",
-        "https://www.rmit.edu.au/students/student-essentials/important-dates",
-        "https://www.rmit.edu.au/students/support-and-facilities/student-support"
-    ]
-    
-    web_data = []
-    for url in rmit_urls:
-        scraped_data = scrape_rmit_website(url)
-        if scraped_data:
-            web_data.append(scraped_data)
-    
-    if web_data:
-        knowledge_data.extend(web_data)
-    
-    # === 2. LOCAL FILES (Static knowledge base) === #
-    # Create knowledge base directory if it doesn't exist
-    Path(KNOWLEDGE_BASE_DIR).mkdir(exist_ok=True)
-    
-    # Load JSON files
-    json_files = list(Path(KNOWLEDGE_BASE_DIR).glob("*.json"))
-    for json_file in json_files:
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    knowledge_data.extend(data)
-                else:
-                    knowledge_data.append(data)
-        except Exception as e:
-            st.warning(f"Could not load {json_file}: {str(e)}")
-    
-    # Load PDF files
-    pdf_files = list(Path(KNOWLEDGE_BASE_DIR).glob("*.pdf"))
-    if pdf_files:
-        pdf_data = extract_text_from_pdfs(pdf_files)
-        knowledge_data.extend(pdf_data)
-    
-    # === 3. DATA CLEANING === #
-    cleaned_data = clean_knowledge_data(knowledge_data)
-    
-    return cleaned_data
-
-# === Build Enhanced Prompt === #
-def build_prompt(user_question, knowledge_base=None):
-    """Build enhanced prompt with knowledge base integration including real-time web data"""
-    
-    # Load knowledge base if not provided
-    if knowledge_base is None:
-        knowledge_base = load_knowledge_base()
-    
-    # Format knowledge base content
-    knowledge_content = ""
-    web_sources = []
-    local_sources = []
-    
-    if knowledge_base:
-        knowledge_content = "\n\n### RMIT KNOWLEDGE BASE (Real-time + Local Data):\n"
-        
-        for i, item in enumerate(knowledge_base):
-            if isinstance(item, dict):
-                # Handle web-scraped content
-                if item.get('source') == 'web' and 'url' in item:
-                    web_sources.append(item['url'])
-                    knowledge_content += f"\n--- WEB SOURCE: {item['title']} ---\n"
-                    knowledge_content += f"URL: {item['url']}\n"
-                    knowledge_content += f"Last Updated: {item.get('last_updated', 'Unknown')}\n"
-                    
-                    for content_item in item.get('content', []):
-                        if isinstance(content_item, dict) and 'text' in content_item:
-                            knowledge_content += f"{content_item.get('type', 'info').upper()}: {content_item['text']}\n"
-                    knowledge_content += "\n"
-                
-                # Handle PDF/local file content
-                elif 'source' in item and 'content' in item:
-                    local_sources.append(item['source'])
-                    knowledge_content += f"\n--- LOCAL SOURCE: {item['source']} ---\n{item['content']}\n\n"
-                
-                # Handle structured data
-                else:
-                    knowledge_content += f"Entry {i+1}: {json.dumps(item, indent=2)}\n\n"
-            else:
-                knowledge_content += f"Information: {str(item)}\n\n"
-    
-    # Base prompt for RMIT Enrolment Advisor
-    base_prompt = f"""
-You are an expert RMIT University Enrolment Advisor assistant powered by RMIT's web data and comprehensive knowledge base. Your primary role is to help RMIT students with:
-
-1. Course enrolment procedures and deadlines
-2. Academic planning and course selection
-3. Enrolment requirements and documentation
-4. Fee payment and financial information
-5. Academic policies and regulations
-6. Contact information for relevant departments
-
-DATA SOURCES:
-- Real-time RMIT website data: {len(web_sources)} web pages
-- Local knowledge files: {len(local_sources)} documents
-- Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-INSTRUCTIONS:
-- Prioritize web data for current information
-- Use official RMIT information when available
-- Be specific about deadlines, requirements, and procedures
-- Direct students to appropriate resources and contacts
-- Maintain a helpful and professional tone
-- If information conflicts between sources, prioritize web data (more recent)
-- Always mention if information is from real-time web sources vs local files
-
-{knowledge_content}
-
-IMPORTANT: This knowledge base includes data from RMIT's official website. Base your responses on this current information. If you're unsure about specific details, advise students to check the official RMIT website or contact RMIT directly.
-"""
-    
-    # Apply prompt tuning
-    enhanced_prompt = tune_prompt_for_context(base_prompt, user_question)
-    
-    return enhanced_prompt
-
-# === Invoke Claude via Bedrock === #
-def invoke_bedrock(prompt_text, max_tokens=1000, temperature=0.3, top_p=0.9):
-    """Invoke Claude model via AWS Bedrock"""
+def should_refresh_knowledge() -> bool:
+    """Check if knowledge base needs refreshing (every 6 hours)"""
     try:
-        credentials = get_credentials(USERNAME, PASSWORD)
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT MAX(last_updated) FROM knowledge_base WHERE is_active = 1
+            ''')
+            result = cursor.fetchone()
+            
+            if not result[0]:
+                return True
+            
+            last_updated = datetime.fromisoformat(result[0])
+            return (datetime.now() - last_updated) > timedelta(hours=6)
+    except:
+        return True
+
+def refresh_knowledge_base():
+    """Refresh knowledge base from RMIT website"""
+    try:
+        # Get relevant URLs from sitemap
+        urls = scraper.get_sitemap_urls()
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, url in enumerate(urls):
+            status_text.text(f"Scraping: {url}")
+            
+            # Scrape page
+            page_data = scraper.scrape_page(url)
+            
+            if page_data['success'] and len(page_data['content']) > 100:
+                # Save to database
+                db_manager.save_knowledge_item(
+                    source_type='web',
+                    source_url=page_data['url'],
+                    title=page_data['title'],
+                    content=page_data['content']
+                )
+            
+            progress_bar.progress((i + 1) / len(urls))
+        
+        status_text.text("✅ Knowledge base updated successfully!")
+        
+    except Exception as e:
+        st.error(f"Error refreshing knowledge base: {str(e)}")
+
+# === Enhanced Prompt Building === #
+def build_enhanced_prompt(user_question: str, chat_history: List[Dict] = None) -> str:
+    """Build enhanced prompt with context and knowledge base"""
+    
+    knowledge_base = load_enhanced_knowledge_base()
+    
+    # Build context from chat history
+    context_section = ""
+    if chat_history and len(chat_history) > 1:
+        context_section = "\n\n### CONVERSATION CONTEXT:\n"
+        for msg in chat_history[-4:]:  # Last 4 messages for context
+            role = "User" if msg['role'] == 'user' else "Assistant"
+            context_section += f"{role}: {msg['content'][:200]}...\n"
+    
+    # Build knowledge base section
+    knowledge_section = ""
+    if knowledge_base:
+        knowledge_section = "\n\n### RMIT KNOWLEDGE BASE (Latest from Official Website):\n"
+        for item in knowledge_base[:10]:  # Top 10 most recent items
+            knowledge_section += f"\n--- {item['title']} ---\n"
+            knowledge_section += f"Source: {item['source_url']}\n"
+            knowledge_section += f"Content: {item['content'][:500]}...\n\n"
+    
+    # Enhanced system prompt
+    system_prompt = f"""
+You are RMIT Connect Helper, an expert AI assistant for RMIT University students. You have access to the latest information from RMIT's official website and maintain conversation context.
+
+## YOUR CAPABILITIES:
+- Provide accurate, up-to-date information about RMIT enrolment, courses, and services
+- Remember previous questions in our conversation
+- Give step-by-step guidance for complex procedures
+- Direct students to appropriate resources and contacts
+
+## RESPONSE GUIDELINES:
+- Use information from the knowledge base when available
+- Be specific about deadlines, requirements, and procedures
+- Provide actionable steps and clear instructions
+- Reference official RMIT sources when possible
+- If unsure, recommend contacting RMIT directly
+- Maintain conversation context and refer to previous questions when relevant
+
+{context_section}
+
+{knowledge_section}
+
+## CURRENT QUESTION: {user_question}
+
+Please provide a comprehensive, helpful response based on the latest RMIT information available.
+"""
+    
+    return system_prompt
+
+# === Bedrock Invocation === #
+def invoke_bedrock_enhanced(prompt_text: str, max_tokens: int = 500, 
+                          temperature: float = 0.3) -> tuple:
+    """Enhanced Bedrock invocation with timing and token tracking"""
+    start_time = datetime.now()
+    
+    try:
+        credentials = get_cached_credentials(USERNAME, PASSWORD)
         if not credentials:
-            return "Authentication failed. Please check your credentials."
+            return "Authentication failed. Please check your credentials.", 0, 0.0
 
         bedrock_runtime = boto3.client(
             "bedrock-runtime",
@@ -397,7 +503,7 @@ def invoke_bedrock(prompt_text, max_tokens=1000, temperature=0.3, top_p=0.9):
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "top_p": top_p,
+            "top_p": 0.9,
             "messages": [{"role": "user", "content": prompt_text}]
         }
 
@@ -409,37 +515,64 @@ def invoke_bedrock(prompt_text, max_tokens=1000, temperature=0.3, top_p=0.9):
         )
 
         result = json.loads(response["body"].read())
-        return result["content"][0]["text"]
+        response_text = result["content"][0]["text"]
+        
+        # Calculate metrics
+        response_time = (datetime.now() - start_time).total_seconds()
+        estimated_tokens = len(prompt_text.split()) + len(response_text.split())
+        
+        return response_text, estimated_tokens, response_time
     
     except Exception as e:
-        return f"Error generating response: {str(e)}"
+        response_time = (datetime.now() - start_time).total_seconds()
+        return f"Error generating response: {str(e)}", 0, response_time
 
-# === Streamlit UI === #
+# === Main Streamlit Application === #
 def main():
     st.set_page_config(
-        page_title="RMIT Enrolment Advisor",
-        page_icon="🎓",
+        page_title="RM-AI-T",
+        page_icon="🤓",
         layout="wide"
     )
 
-    # Custom CSS for better UI
+    # Custom CSS
     st.markdown("""
     <style>
     .main-header {
         text-align: center;
-        padding: 1rem 0;
-        background: linear-gradient(90deg, #E60028, #E66947);
+        padding: 1.5rem 0;
+        background: linear-gradient(135deg, #E60028, #E66947, #F4A261);
         color: white;
-        border-radius: 10px;
+        border-radius: 15px;
         margin-bottom: 2rem;
+        box-shadow: 0 4px 15px rgba(230, 0, 40, 0.3);
     }
-
-    .knowledge-status {
-        background: #293b5f;
+    
+    .stats-container {
+        display: flex;
+        justify-content: space-around;
+        background: #00AAFF;
         padding: 1rem;
-        border-radius: 8px;
-        border: 1px solid #28a745;
-        margin-bottom: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    
+    .stat-item {
+        text-align: center;
+    }
+    
+    .chat-message {
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 10px;
+        border-left: 4px solid #E60028;
+        background: #f8f9fa;
+    }
+    
+    .response-metrics {
+        font-size: 0.8em;
+        color: #666;
+        margin-top: 0.5rem;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -447,109 +580,185 @@ def main():
     # Header
     st.markdown(f"""
     <div class="main-header">
-        <h1>{APP_TITLE}</h1>
+        <h1>🎓 {APP_TITLE}</h1>
         <p>{APP_SUBTITLE}</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Knowledge base status
-    with st.container():
-        knowledge_base = load_knowledge_base()
+    # Initialize session state
+    if 'chat_session_id' not in st.session_state:
+        st.session_state.chat_session_id = db_manager.create_session()
+    
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+
+    # Sidebar with statistics and controls
+    with st.sidebar:
+        st.markdown("## 📊 System Status")
         
-        # Count different types of sources
-        web_sources = sum(1 for item in knowledge_base if isinstance(item, dict) and item.get('source') == 'web')
-        local_sources = len(knowledge_base) - web_sources
+        # Get statistics
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Count knowledge base items
+            cursor.execute("SELECT COUNT(*) FROM knowledge_base WHERE is_active = 1")
+            kb_count = cursor.fetchone()[0]
+            
+            # Count total messages
+            cursor.execute("SELECT COUNT(*) FROM chat_messages")
+            total_messages = cursor.fetchone()[0]
+            
+            # Count sessions today
+            cursor.execute("""
+                SELECT COUNT(*) FROM chat_sessions 
+                WHERE DATE(created_at) = DATE('now')
+            """)
+            sessions_today = cursor.fetchone()[0]
         
-        if knowledge_base:
-            st.markdown(f"""
-            <div class="knowledge-status">
-                💡 Ready to assist with current RMIT Connect's information!
+        # Display stats
+        st.markdown(f"""
+        <div class="stats-container">
+            <div class="stat-item">
+                <strong>{kb_count}</strong><br>
+                Knowledge Items
             </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.warning("⚠️ No knowledge base found. Please contact admin for further configuration.")
-    
-    # Chat input
-    user_question = st.text_area(
-        "💬 **Ask your question in the box below:**",
-        placeholder=CHAT_PLACEHOLDER,
-        height=100,
-        key="user_input"
-    )
-    # Show data freshness
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    st.caption(f"🕒 Data last refreshed: {current_time} | Cache expires in 1 hour")
-    # Action buttons
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        ask_button = st.button("🚀 Get Answer", type="primary", use_container_width=True)
-    
-    with col2:
-        if st.button("🔄 Clear", use_container_width=True):
+            <div class="stat-item">
+                <strong>{total_messages}</strong><br>
+                Total Messages
+            </div>
+            <div class="stat-item">
+                <strong>{sessions_today}</strong><br>
+                Sessions Today
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Control buttons
+        if st.button("🔄 Refresh Knowledge Base", use_container_width=True):
+            st.cache_data.clear()
+            refresh_knowledge_base()
+            st.success("Knowledge base refreshed!")
+        
+        if st.button("🗑️ Clear Chat History", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.chat_session_id = db_manager.create_session()
             st.rerun()
+        
+        if st.button("📊 Export Chat History", use_container_width=True):
+            chat_history = db_manager.get_chat_history(st.session_state.chat_session_id, 100)
+            if chat_history:
+                df = pd.DataFrame(chat_history)
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"rmit_chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+
+    # Main chat interface
+    st.markdown("## 💬 Chat with RMIT Connect Helper")
     
-    with col3:
-        if st.button("📋 Sample Questions", use_container_width=True):
-            st.session_state.show_samples = not st.session_state.get('show_samples', False)
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if "metrics" in message:
+                st.markdown(f"""
+                <div class="response-metrics">
+                    🏃‍♂️‍➡️ Response time: {message['metrics']['response_time']:.2f}s | 
+                    🤔 Estimated tokens: {message['metrics']['tokens']}
+                </div>
+                """, unsafe_allow_html=True)
 
-    # Sample questions
-    if st.session_state.get('show_samples', False):
-        st.markdown("### 💡 Sample Questions:")
-        sample_questions = [
-            "How do I enrol in courses for next semester?",
-            "What are the enrolment deadlines for 2025?",
-            "How do I pay my course fees?",
-            "What documents do I need for enrolment?",
-            "Who do I contact about enrolment issues?",
-            "How do I change my course enrolment?",
-        ]
-        for i, question in enumerate(sample_questions, 1):
-            st.markdown(f"**{i}.** {question}")
+    # Chat input
+    if prompt := st.chat_input("Ask me anything about RMIT..."):
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # Save user message to database
+        db_manager.save_message(
+            st.session_state.chat_session_id, 
+            "user", 
+            prompt
+        )
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    # Process question
-    if ask_button and user_question.strip():
-        with st.spinner(PROCESSING_MESSAGE):
-            try:
+        # Generate assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # Get chat history for context
+                chat_history = db_manager.get_chat_history(st.session_state.chat_session_id)
+                
                 # Build enhanced prompt
-                prompt = build_prompt(user_question, knowledge_base)
+                enhanced_prompt = build_enhanced_prompt(prompt, chat_history)
                 
                 # Get response
-                response = invoke_bedrock(prompt)
+                response, tokens, response_time = invoke_bedrock_enhanced(enhanced_prompt)
                 
                 # Display response
-                st.success(SUCCESS_MESSAGE)
-                st.markdown("### 🤖 **RMIT Enrolment Advisor Response:**")
                 st.markdown(response)
                 
-                # Additional resources
-                st.markdown("---")
-                st.markdown("### 📞 **Need More Help?**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("""
-                    **RMIT Student Services:**
-                    - 📧 ask.rmit@rmit.edu.au
-                    - 📞 +61 3 9925 5000
-                    """)
-                with col2:
-                    st.markdown("""
-                    **Online Resources:**
-                    - [RMIT Student Portal](https://www.rmit.edu.au/students)
-                    - [Enrolment Guide](https://www.rmit.edu.au/students/my-course/enrolment)
-                    """)
+                # Display metrics
+                st.markdown(f"""
+                <div class="response-metrics">
+                    🏃‍♂️‍➡️ Response time: {response_time:.2f}s | 
+                    🤔 Estimated tokens: {tokens}
+                </div>
+                """, unsafe_allow_html=True)
                 
-            except Exception as e:
-                st.error(f"{ERROR_MESSAGE}\nDetails: {str(e)}")
-    
-    elif ask_button:
-        st.warning("Please enter a question before clicking 'Get Answer'.")
+                # Save assistant message to database
+                db_manager.save_message(
+                    st.session_state.chat_session_id,
+                    "assistant",
+                    response,
+                    tokens,
+                    response_time
+                )
+                
+                # Add to session state
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": response,
+                    "metrics": {
+                        "response_time": response_time,
+                        "tokens": tokens
+                    }
+                })
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Show additional resources only when there are messages
+    if st.session_state.messages:
+        st.markdown("---")
+        
+        # Create expandable section for additional resources
+        with st.expander("📞 **Need More Help?** - Click to expand"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("""
+                **RMIT Student Services:**
+                - 📧 ask.rmit@rmit.edu.au
+                - 📞 +61 3 9925 5000
+                - 🌐 [Student Portal](https://www.rmit.edu.au/students)
+                """)
+            with col2:
+                st.markdown("""
+                **Quick Links:**
+                - [Enrolment Guide](https://www.rmit.edu.au/students/my-course/enrolment)
+                - [Important Dates](https://www.rmit.edu.au/students/student-essentials/important-dates)
+                - [Fees & Payments](https://www.rmit.edu.au/students/student-essentials/fees-and-payments)
+                """)
 
     # Footer
     st.markdown("---")
-    st.markdown("*This chatbot provides general guidance. For official information, always refer to RMIT's official website or contact RMIT directly.*")
+    st.markdown("""
+    *This enhanced chatbot provides guidance based on RMIT's official website. 
+    Chat history is saved locally for context. For official information, always refer to RMIT's website.*
+    """)
 
 if __name__ == "__main__":
     main()
