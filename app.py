@@ -1,5 +1,5 @@
-# Enhanced RMIT Enrolment Advisor Chatbot
-# Author: Enhanced RM-AI-T HELPER
+# RMIT Advisor Chatbot
+# Author: Van Duc Tri - s3978223
 # Features: Database Integration, Advanced Web Scraping, Chat History
 # Updated: June 2025
 
