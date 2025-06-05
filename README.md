@@ -9,4 +9,5 @@
 - Web Scrapping - BeautifulSoup, Requests
 - Data Processing - Pandas, PyPDF2
 # Using the app on your local machine
-## 
+##  Prerequisites
+- Python 3.11 or higher(It is recommended to use the latest version from "https://www.python.org/downloads/')
