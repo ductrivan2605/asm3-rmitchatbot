@@ -23,7 +23,7 @@ https://docs.google.com/presentation/d/1JebUXeE7dUrxQ-_enEbHko8m7t9cF7C9kzrfxvhk
 - **Data Processing** - Pandas, PyPDF2
 # Using the app on your local machine
 ## Prerequisites
-- Python 3.11 or higher(It is recommended to use the latest version from `https://www.python.org/downloads/`)
+- Python 3.11 or higher(It is recommended to use the latest version from `https://www.python.org/downloads/` instead of downloading from Microsoft store as it's may cause a little trouble with the metadata)
 - Registered account for AWS Bedrock *here*
 ```
 https://us-east-1kopki1lpu.auth.us-east-1.amazoncognito.com/login?client_id=3h7m15971bnfah362dldub1u2p&response_type=code&scope=aws.cognito.signin.user.admin+email+openid&redirect_uri=https%3A%2F%2Fd84l1y8p4kdic.cloudfront.net
