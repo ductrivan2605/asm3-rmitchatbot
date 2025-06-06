@@ -4,6 +4,10 @@
 ```
 https://ductrivan2605-asm3-rmitchatbot-app-ugvvox.streamlit.app/
 ```
+## The Presentation
+```
+https://docs.google.com/presentation/d/1JebUXeE7dUrxQ-_enEbHko8m7t9cF7C9kzrfxvhkNXs/edit?usp=sharing
+```
 # Features
 - AI-Powered Chatbot using AWS Bedrock's Claude AI model that used RMIT's official website as knowledge base
 - Response time and token used display.
