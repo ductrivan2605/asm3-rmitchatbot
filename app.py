@@ -484,7 +484,7 @@ def build_enhanced_prompt(user_question: str, chat_history: List[Dict] = None) -
 You are RMIT Connect Helper, an expert AI assistant for RMIT University students. You have access to the latest information from RMIT's official website and maintain conversation context.
 
 ## YOUR CAPABILITIES:
-- Provide accurate, up-to-date information about RMIT enrolment, courses, and services
+- Provide accurate, up-to-date information about RMIT enrolment,SPECIFIC courses, and services
 - Remember previous questions in our conversation
 - Give step-by-step guidance for complex procedures
 - Direct students to appropriate resources and contacts
@@ -506,7 +506,7 @@ You are RMIT Connect Helper, an expert AI assistant for RMIT University students
 ## CURRENT QUESTION: {user_question}
 
 Please provide a comprehensive, helpful response based on the latest RMIT information available.
-If the question is not related to RMIT or academic topics, politely decline to answer.
+If the question is not related to RMIT, politely decline to answer.
 """
     
     return system_prompt
@@ -597,7 +597,7 @@ def main():
         margin: 0.5rem 0;
         border-radius: 10px;
         border-left: 4px solid #E60028;
-        background: #f8f9fa;
+        background: #00AAFF;
     }
     
     .response-metrics {
@@ -611,7 +611,7 @@ def main():
         font-weight: bold;
         padding: 0.5rem;
         border-left: 4px solid #E60028;
-        background: #ffecec;
+        background: #00AAFF;
     }
     </style>
     """, unsafe_allow_html=True)
