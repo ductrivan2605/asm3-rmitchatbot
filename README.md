@@ -1,10 +1,11 @@
 # Contributor
 ***VAN DUC TRI - S3978223***
-## Application's direct link
+## Application's related link
+1. Deployed app
 ```
 https://ductrivan2605-asm3-rmitchatbot-app-ugvvox.streamlit.app/
 ```
-## The Presentation
+2. Presentation
 ```
 https://docs.google.com/presentation/d/1JebUXeE7dUrxQ-_enEbHko8m7t9cF7C9kzrfxvhkNXs/edit?usp=sharing
 ```
