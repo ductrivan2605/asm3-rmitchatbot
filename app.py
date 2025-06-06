@@ -248,8 +248,10 @@ class RMITWebScraper:
             # Default keywords for RMIT student services
             if not keywords:
                 keywords = [
-                    'enrolment', 'enrollment', 'courses', 'programs', 'fees', 
-                    'students', 'support', 'academic', 'deadlines', 'dates'
+                    'enrolment', 'enrollment', 'course', 'program', 'fees', 
+                    'students', 'support', 'academic', 'deadlines', 'dates',
+                    'library', 'timetable', 'scholarship', 'international',
+                    'enrol'
                 ]
             
             # Extract URLs containing relevant keywords
