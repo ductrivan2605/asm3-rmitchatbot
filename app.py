@@ -607,7 +607,7 @@ def main():
     }
     
     .off-topic-warning {
-        color: #E60028;
+        color: #ffffff;
         font-weight: bold;
         padding: 0.5rem;
         border-left: 4px solid #E60028;
