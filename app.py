@@ -248,8 +248,19 @@ class RMITWebScraper:
             # Default keywords for RMIT student services
             if not keywords:
                 keywords = [
-                    'enrolment', 'enrollment', 'courses', 'programs', 'fees', 
-                    'students', 'support', 'academic', 'deadlines', 'dates'
+                    'rmit', 'enrol', 'enroll', 'course', 'program', 'degree', 'study',
+                    'student', 'academic', 'assignment', 'exam', 'lecture', 'tutorial',
+                    'fee', 'payment', 'scholarship', 'deadline', 'date', 'timetable',
+                    'library', 'campus', 'international', 'domestic', 'credit', 'result',
+                    'transcript', 'plagiarism', 'extension', 'graduation', 'certificate',
+                    'diploma', 'bachelor', 'master', 'phd', 'research', 'thesis',
+                    'university', 'college', 'education', 'tuition', 'admission',
+                    'enrollment', 'enrolment', 'assessment', 'grade', 'marks',
+                    'faculty', 'school', 'department', 'tutor', 'professor',
+                    'accommodation', 'housing', 'campus', 'melbourne', 'vn',
+                    'au', 'online', 'distance', 'learning', 'canvas',
+                    'lms', 'portal', 'student id', 'id card',
+                    'orientation', 'workshop', 'seminar', 'conference'
                 ]
             
             # Extract URLs containing relevant keywords
@@ -260,7 +271,7 @@ class RMITWebScraper:
                     if any(keyword in url.lower() for keyword in keywords):
                         urls.append(url)
             
-            return urls[:20]  # Limit to first 20 relevant URLs
+            return urls[:10]  # Limit to first 10 relevant URLs
             
         except Exception as e:
             st.warning(f"Could not fetch sitemap: {str(e)}")
@@ -269,11 +280,11 @@ class RMITWebScraper:
     def _get_fallback_urls(self) -> List[str]:
         """Fallback URLs if sitemap fails"""
         return [
-            "https://www.rmit.edu.au/students/my-course/enrolment",
-            "https://www.rmit.edu.au/students/student-essentials/fees-and-payments",
-            "https://www.rmit.edu.au/students/student-essentials/important-dates",
-            "https://www.rmit.edu.au/students/support-and-facilities/student-support",
+            "https://www.rmit.edu.au/study-with-us",
+            "https://www.rmit.edu.au/enrolment",
+            "https://www.rmit.edu.au/students/my-course/important-dates",
             "https://www.rmit.edu.au/students/support-services/study-support",
+            "https://research.rmit.edu.au",
             "https://www.rmit.edu.au/study-with-us/levels-of-study/undergraduate-study",
             "https://www.rmit.edu.au/study-with-us/levels-of-study/postgraduate-study"
         ]
@@ -428,9 +439,35 @@ def refresh_knowledge_base():
     except Exception as e:
         st.error(f"Error refreshing knowledge base: {str(e)}")
 
+# === Question Relevance Check === #
+def is_rmit_related(question: str) -> bool:
+    """Check if the question is related to RMIT or academic topics"""
+    rmit_keywords = [
+        'rmit', 'enrol', 'enroll', 'course', 'program', 'degree', 'study', 
+        'student', 'academic', 'assignment', 'exam', 'lecture', 'tutorial',
+        'fee', 'payment', 'scholarship', 'deadline', 'date', 'timetable',
+        'library', 'campus', 'international', 'domestic', 'credit', 'result',
+        'transcript', 'plagiarism', 'extension', 'graduation', 'certificate',
+        'diploma', 'bachelor', 'master', 'phd', 'research', 'thesis',
+        'university', 'college', 'education', 'tuition', 'admission',
+        'enrollment', 'enrolment', 'assessment', 'grade', 'marks',
+        'faculty', 'school', 'department', 'tutor', 'professor',
+        'accommodation', 'housing', 'campus', 'melbourne', 'vietnam',
+        'spain', 'online', 'distance', 'learning', 'canvas',
+        'blackboard', 'lms', 'portal', 'student id', 'id card',
+        'orientation', 'workshop', 'seminar', 'conference'
+    ]
+    
+    question_lower = question.lower()
+    return any(keyword in question_lower for keyword in rmit_keywords)
+
 # === Prompt Building === #
 def build_enhanced_prompt(user_question: str, chat_history: List[Dict] = None) -> str:
     """Build enhanced prompt with context and knowledge base"""
+    
+    # First check if the question is relevant
+    if not is_rmit_related(user_question):
+        return "OFF_TOPIC"
     
     knowledge_base = load_enhanced_knowledge_base()
     
@@ -456,7 +493,7 @@ def build_enhanced_prompt(user_question: str, chat_history: List[Dict] = None) -
 You are RMIT Connect Helper, an expert AI assistant for RMIT University students. You have access to the latest information from RMIT's official website and maintain conversation context.
 
 ## YOUR CAPABILITIES:
-- Provide accurate, up-to-date information about RMIT enrolment, courses, and services
+- Provide accurate, up-to-date information about RMIT enrolment,SPECIFIC courses, and services
 - Remember previous questions in our conversation
 - Give step-by-step guidance for complex procedures
 - Direct students to appropriate resources and contacts
@@ -468,7 +505,12 @@ You are RMIT Connect Helper, an expert AI assistant for RMIT University students
 - Reference official RMIT sources when possible
 - If unsure, recommend contacting RMIT directly
 - Maintain conversation context and refer to previous questions when relevant
-
+- ONLY answer questions related to RMIT University and academic topics
+- Politely decline to answer any non-RMIT related questions except for continuing the conversation
+## KNOWLEDGE BASE:
+- This knowledge base contains the latest information from RMIT's official website, including enrolment procedures, course details, student services, and academic support.
+## CONTEXT AND KNOWLEDGE:
+- Use the following context and knowledge base to answer the user's question:
 {context_section}
 
 {knowledge_section}
@@ -476,6 +518,7 @@ You are RMIT Connect Helper, an expert AI assistant for RMIT University students
 ## CURRENT QUESTION: {user_question}
 
 Please provide a comprehensive, helpful response based on the latest RMIT information available.
+If the question is not related to RMIT, politely decline to answer.
 """
     
     return system_prompt
@@ -566,13 +609,21 @@ def main():
         margin: 0.5rem 0;
         border-radius: 10px;
         border-left: 4px solid #E60028;
-        background: #f8f9fa;
+        background: #00AAFF;
     }
     
     .response-metrics {
         font-size: 0.8em;
         color: #666;
         margin-top: 0.5rem;
+    }
+    
+    .off-topic-warning {
+        color: #ffffff;
+        font-weight: bold;
+        padding: 0.5rem;
+        border-left: 4px solid #E60028;
+        background: #00AAFF;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -664,8 +715,12 @@ def main():
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if "metrics" in message:
+            if message.get("off_topic", False):
+                st.markdown(f'<div class="off-topic-warning">{message["content"]}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(message["content"])
+            
+            if "metrics" in message and message["metrics"]["tokens"] > 0:
                 st.markdown(f"""
                 <div class="response-metrics">
                     🏃‍♂️‍➡️ Response time: {message['metrics']['response_time']:.2f}s | 
@@ -698,19 +753,26 @@ def main():
                 # Build enhanced prompt
                 enhanced_prompt = build_enhanced_prompt(prompt, chat_history)
                 
-                # Get response
-                response, tokens, response_time = invoke_bedrock_enhanced(enhanced_prompt)
+                # Check if question is off-topic
+                if enhanced_prompt == "OFF_TOPIC":
+                    response = (
+                        "I'm sorry, but I can only answer questions related to RMIT University "
+                        "and academic topics. Please ask me about RMIT courses, enrollment, "
+                        "student services, or other university-related matters."
+                    )
+                    tokens = 0
+                    response_time = 0
+                    off_topic = True
+                else:
+                    # Get response
+                    response, tokens, response_time = invoke_bedrock_enhanced(enhanced_prompt)
+                    off_topic = False
                 
                 # Display response
-                st.markdown(response)
-                
-                # Display metrics
-                st.markdown(f"""
-                <div class="response-metrics">
-                    🏃‍♂️‍➡️ Response time: {response_time:.2f}s | 
-                    🤔 Estimated tokens: {tokens}
-                </div>
-                """, unsafe_allow_html=True)
+                if off_topic:
+                    st.markdown(f'<div class="off-topic-warning">{response}</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(response)
                 
                 # Save assistant message to database
                 db_manager.save_message(
@@ -728,7 +790,8 @@ def main():
                     "metrics": {
                         "response_time": response_time,
                         "tokens": tokens
-                    }
+                    },
+                    "off_topic": off_topic
                 })
 
     # Show additional resources only when there are messages
