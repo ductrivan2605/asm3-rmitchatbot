@@ -363,7 +363,7 @@ def get_cached_credentials(username: str, password: str) -> Optional[Dict]:
         st.error(f"Authentication failed: {str(e)}")
         return None
 
-# === Enhanced Knowledge Base Management === #
+# === Knowledge Base Management === #
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
 def load_enhanced_knowledge_base() -> List[Dict]:
     """Load knowledge base with database integration and web scraping"""
@@ -428,7 +428,7 @@ def refresh_knowledge_base():
     except Exception as e:
         st.error(f"Error refreshing knowledge base: {str(e)}")
 
-# === Enhanced Prompt Building === #
+# === Prompt Building === #
 def build_enhanced_prompt(user_question: str, chat_history: List[Dict] = None) -> str:
     """Build enhanced prompt with context and knowledge base"""
     
