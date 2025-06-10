@@ -27,7 +27,7 @@ load_dotenv()
 
 # === Configuration Labels === #
 APP_TITLE = "RMIT CONNECT HELPER"
-APP_SUBTITLE = "Your intelligent assistant for RMIT services and academic support 🤓"
+APP_SUBTITLE = "Your intelligent assistant for RMIT services and academic support ☝️🤓"
 PROCESSING_MESSAGE = "Processing your question... 🤔"
 SUCCESS_MESSAGE = "Response generated successfully 🗿"
 ERROR_MESSAGE = "An error occurred. Please try again. 😭"
@@ -598,10 +598,12 @@ def main():
         padding: 1rem;
         border-radius: 10px;
         margin: 1rem 0;
+        border: 1px solid #00AAFF;
     }
     
     .stat-item {
         text-align: center;
+        color: #333;
     }
     
     .chat-message {
@@ -609,21 +611,26 @@ def main():
         margin: 0.5rem 0;
         border-radius: 10px;
         border-left: 4px solid #E60028;
-        background: #00AAFF;
+        background: #f8f9fa;
     }
     
-    .response-metrics {
-        font-size: 0.8em;
-        color: #666;
-        margin-top: 0.5rem;
-    }
     
     .off-topic-warning {
-        color: #ffffff;
+        color: #721c24;
         font-weight: bold;
-        padding: 0.5rem;
-        border-left: 4px solid #E60028;
-        background: #00AAFF;
+        padding: 1rem;
+        border-left: 4px solid #f5c6cb;
+        background: #f8d7da;
+        border-radius: 8px;
+        margin: 0.5rem 0;
+    }
+    
+    .metric-badge {;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.75em;
+        margin-right: 0.5rem;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -720,11 +727,24 @@ def main():
             else:
                 st.markdown(message["content"])
             
-            if "metrics" in message and message["metrics"]["tokens"] > 0:
+            # Enhanced metrics display - Always show for assistant messages
+            if message["role"] == "assistant" and "metrics" in message:
+                metrics = message["metrics"]
+                tokens = metrics.get("tokens", 0)
+                response_time = metrics.get("response_time", 0)
+                
+                # Always display metrics, even if tokens is 0 (for off-topic responses)
                 st.markdown(f"""
                 <div class="response-metrics">
-                    🏃‍♂️‍➡️ Response time: {message['metrics']['response_time']:.2f}s | 
-                    🤔 Estimated tokens: {message['metrics']['tokens']}
+                    <div class="metrics-container">
+                        <div>
+                            <span class="metric-badge">⏱️ {response_time:.2f}s</span>
+                            <span class="metric-badge">🔤 {tokens} tokens</span>
+                        </div>
+                        <div>
+                            <small>Generated at {datetime.now().strftime('%H:%M:%S')}</small>
+                        </div>
+                    </div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -761,7 +781,7 @@ def main():
                         "student services, or other university-related matters."
                     )
                     tokens = 0
-                    response_time = 0
+                    response_time = 0.1  # Minimal time for off-topic response
                     off_topic = True
                 else:
                     # Get response
@@ -774,6 +794,21 @@ def main():
                 else:
                     st.markdown(response)
                 
+                # Display metrics immediately after response
+                st.markdown(f"""
+                <div class="response-metrics">
+                    <div class="metrics-container">
+                        <div>
+                            <span class="metric-badge">⏱️ {response_time:.2f}s</span>
+                            <span class="metric-badge">🔤 {tokens} tokens</span>
+                        </div>
+                        <div>
+                            <small>Generated at {datetime.now().strftime('%H:%M:%S')}</small>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 # Save assistant message to database
                 db_manager.save_message(
                     st.session_state.chat_session_id,
@@ -783,7 +818,7 @@ def main():
                     response_time
                 )
                 
-                # Add to session state
+                # Add to session state with metrics
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": response,
@@ -819,8 +854,7 @@ def main():
     # Footer
     st.markdown("---")
     st.markdown("""
-    *This enhanced chatbot provides guidance based on RMIT's official website. 
-    Chat history is saved locally for context. For official information, always refer to RMIT's website.*
+    *This enhanced chatbot provides guidance based on RMIT's official website. For official information, always refer to RMIT's website.*
     """)
 
 if __name__ == "__main__":
