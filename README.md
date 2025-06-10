@@ -3,7 +3,7 @@
 ## Application's related link
 1. Deployed app
 ```
-https://ductrivan2605-asm3-rmitchatbot-app-ugvvox.streamlit.app/
+https://rm-ai-t.streamlit.app/
 ```
 2. Presentation
 ```
@@ -115,6 +115,8 @@ CREATE TABLE knowledge_base (
 ![image](https://github.com/user-attachments/assets/0cc950f0-741b-422a-b28a-54697c754b1f)
 - Scraping content from RMIT's official website
 ![image](https://github.com/user-attachments/assets/c50a5e87-9b54-4e79-96a2-2b60a8d9426f)
+- Off-topic Handling
+![image](https://github.com/user-attachments/assets/98e6ebf8-852f-41e6-abd8-27b11f58c0ee)
 
 
 
