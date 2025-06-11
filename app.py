@@ -673,7 +673,7 @@ def main():
             """)
             sessions_today = cursor.fetchone()[0]
         
-        # Display stats
+         # Display stats
         st.markdown(f"""
         <div class="stats-container">
             <div class="stat-item">
@@ -715,6 +715,7 @@ def main():
                     file_name=f"rmit_chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
+
 
     # Main chat interface
     st.markdown("## 💬 Chat with RMIT Connect Helper")
