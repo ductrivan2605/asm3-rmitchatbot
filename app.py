@@ -239,8 +239,10 @@ class RMITWebScraper:
     def get_sitemap_urls(self, keywords: List[str] = None) -> List[str]:
         """Extract relevant URLs from RMIT sitemap"""
         try:
+            st.write("🔍 Attempting to fetch sitemap...")
             response = requests.get(self.sitemap_url, headers=self.headers, timeout=10)
             response.raise_for_status()
+            st.write(f"✅ Sitemap fetched successfully, size: {len(response.content)} bytes")
             
             root = ET.fromstring(response.content)
             urls = []
@@ -248,33 +250,36 @@ class RMITWebScraper:
             # Default keywords for RMIT student services
             if not keywords:
                 keywords = [
-                    'rmit', 'enrol', 'enroll', 'course', 'program', 'degree', 'study',
-                    'student', 'academic', 'assignment', 'exam', 'lecture', 'tutorial',
-                    'fee', 'payment', 'scholarship', 'deadline', 'date', 'timetable',
-                    'library', 'campus', 'international', 'domestic', 'credit', 'result',
-                    'transcript', 'plagiarism', 'extension', 'graduation', 'certificate',
-                    'diploma', 'bachelor', 'master', 'phd', 'research', 'thesis',
-                    'university', 'college', 'education', 'tuition', 'admission',
-                    'enrollment', 'enrolment', 'assessment', 'grade', 'marks',
-                    'faculty', 'school', 'department', 'tutor', 'professor',
-                    'accommodation', 'housing', 'campus', 'melbourne', 'vn',
-                    'au', 'online', 'distance', 'learning', 'canvas',
-                    'lms', 'portal', 'student id', 'id card',
-                    'orientation', 'workshop', 'seminar', 'conference'
+                    'student', 'enrol', 'course', 'program', 'study',
+                    'academic', 'fee', 'deadline', 'campus', 'international'
                 ]
             
             # Extract URLs containing relevant keywords
+            all_urls = []
             for url_elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
                 loc_elem = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
                 if loc_elem is not None:
-                    url = loc_elem.text
-                    if any(keyword in url.lower() for keyword in keywords):
-                        urls.append(url)
+                    all_urls.append(loc_elem.text)
+            
+            st.write(f"📊 Found {len(all_urls)} total URLs in sitemap")
+            
+            # Filter URLs by keywords
+            for url in all_urls:
+                if any(keyword in url.lower() for keyword in keywords):
+                    urls.append(url)
+            
+            st.write(f"🎯 Filtered to {len(urls)} relevant URLs")
+            
+            # If no URLs found with keywords, use fallback
+            if not urls:
+                st.warning("No URLs found with keywords, using fallback URLs")
+                return self._get_fallback_urls()
             
             return urls[:10]  # Limit to first 10 relevant URLs
             
         except Exception as e:
-            st.warning(f"Could not fetch sitemap: {str(e)}")
+            st.error(f"Could not fetch sitemap: {str(e)}")
+            st.info("Using fallback URLs instead")
             return self._get_fallback_urls()
     
     def _get_fallback_urls(self) -> List[str]:
@@ -383,10 +388,13 @@ def load_enhanced_knowledge_base() -> List[Dict]:
     db_knowledge = db_manager.get_knowledge_base()
     
     # If database is empty or outdated, refresh from web
-    if not db_knowledge or should_refresh_knowledge():
-        st.info("🔄 Refreshing knowledge base from RMIT website...")
-        refresh_knowledge_base()
+    if not db_knowledge:
+        st.info("🔄 Knowledge base is empty. Auto-refreshing from RMIT website...")
+        # Don't use cache for this call
+        refresh_knowledge_base_no_cache()
         db_knowledge = db_manager.get_knowledge_base()
+    elif should_refresh_knowledge():
+        st.info("🔄 Knowledge base is outdated (>6 hours). Consider refreshing.")
     
     return db_knowledge
 
@@ -400,43 +408,139 @@ def should_refresh_knowledge() -> bool:
             ''')
             result = cursor.fetchone()
             
-            if not result[0]:
+            if not result or not result[0]:
                 return True
             
-            last_updated = datetime.fromisoformat(result[0])
+            # Handle both string and datetime formats
+            last_updated_str = result[0]
+            if isinstance(last_updated_str, str):
+                # Try to parse different datetime formats
+                try:
+                    last_updated = datetime.fromisoformat(last_updated_str.replace('Z', '+00:00'))
+                except ValueError:
+                    try:
+                        last_updated = datetime.strptime(last_updated_str, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        return True
+            else:
+                last_updated = last_updated_str
+            
             return (datetime.now() - last_updated) > timedelta(hours=6)
-    except:
+    except Exception as e:
+        st.error(f"Error checking knowledge base refresh status: {str(e)}")
         return True
 
-def refresh_knowledge_base():
-    """Refresh knowledge base from RMIT website"""
+def refresh_knowledge_base_no_cache():
+    """Refresh knowledge base without UI elements (for automatic refresh)"""
     try:
         # Get relevant URLs from sitemap
         urls = scraper.get_sitemap_urls()
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        if not urls:
+            st.error("No URLs found to scrape. Using fallback URLs.")
+            urls = scraper._get_fallback_urls()
+        
+        success_count = 0
         
         for i, url in enumerate(urls):
-            status_text.text(f"Scraping: {url}")
-            
-            # Scrape page
-            page_data = scraper.scrape_page(url)
-            
-            if page_data['success'] and len(page_data['content']) > 100:
-                # Save to database
-                db_manager.save_knowledge_item(
-                    source_type='web',
-                    source_url=page_data['url'],
-                    title=page_data['title'],
-                    content=page_data['content']
-                )
-            
-            progress_bar.progress((i + 1) / len(urls))
+            try:
+                # Scrape page
+                page_data = scraper.scrape_page(url)
+                
+                if page_data['success'] and len(page_data['content']) > 100:
+                    # Save to database
+                    result = db_manager.save_knowledge_item(
+                        source_type='web',
+                        source_url=page_data['url'],
+                        title=page_data['title'],
+                        content=page_data['content']
+                    )
+                    
+                    if result != "duplicate":
+                        success_count += 1
+                
+            except Exception as url_error:
+                st.warning(f"Error scraping {url}: {str(url_error)}")
+                continue
         
-        status_text.text("✅ Knowledge base updated successfully!")
+        if success_count > 0:
+            st.success(f"Knowledge base initialized with {success_count} items!")
+        else:
+            st.warning("Could not add any new knowledge items.")
         
     except Exception as e:
+        st.error(f"Error refreshing knowledge base: {str(e)}")
+
+def refresh_knowledge_base():
+    """Refresh knowledge base from RMIT website with UI feedback"""
+    # Create a placeholder for the entire refresh process
+    refresh_placeholder = st.empty()
+    
+    try:
+        with refresh_placeholder.container():
+            st.info("🔄 Starting knowledge base refresh...")
+            
+            # Get relevant URLs from sitemap
+            urls = scraper.get_sitemap_urls()
+            
+            if not urls:
+                st.error("No URLs found to scrape. Using fallback URLs.")
+                urls = scraper._get_fallback_urls()
+            
+            st.info(f"Found {len(urls)} URLs to scrape...")
+            
+            # Create progress tracking
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            success_count = 0
+            
+            for i, url in enumerate(urls):
+                try:
+                    status_text.text(f"Scraping ({i+1}/{len(urls)}): {url[:60]}...")
+                    
+                    # Scrape page
+                    page_data = scraper.scrape_page(url)
+                    
+                    if page_data['success'] and len(page_data['content']) > 100:
+                        # Save to database
+                        result = db_manager.save_knowledge_item(
+                            source_type='web',
+                            source_url=page_data['url'],
+                            title=page_data['title'],
+                            content=page_data['content']
+                        )
+                        
+                        if result != "duplicate":
+                            success_count += 1
+                            status_text.text(f"✅ Saved: {page_data['title'][:50]}...")
+                        else:
+                            status_text.text(f"⚠️ Duplicate content skipped")
+                    else:
+                        status_text.text(f"❌ Failed to scrape meaningful content")
+                    
+                    # Update progress bar
+                    progress_bar.progress((i + 1) / len(urls))
+                    
+                except Exception as url_error:
+                    st.warning(f"Error scraping {url}: {str(url_error)}")
+                    status_text.text(f"❌ Error with: {url[:50]}...")
+                    continue
+            
+            # Final status
+            if success_count > 0:
+                st.success(f"✅ Knowledge base updated with {success_count} new items!")
+                # Clear the cache to force reload
+                st.cache_data.clear()
+            else:
+                st.warning("⚠️ No new knowledge items were added (all content may be duplicates)")
+        
+        # Clear the refresh interface after a delay
+        import time
+        time.sleep(3)
+        refresh_placeholder.empty()
+        
+    except Exception as e:
+        refresh_placeholder.empty()
         st.error(f"Error refreshing knowledge base: {str(e)}")
 
 # === Question Relevance Check === #
@@ -654,26 +758,40 @@ def main():
     with st.sidebar:
         st.markdown("## 📊 System Status")
         
-        # Get statistics
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            # Count knowledge base items
-            cursor.execute("SELECT COUNT(*) FROM knowledge_base WHERE is_active = 1")
-            kb_count = cursor.fetchone()[0]
-            
-            # Count total messages
-            cursor.execute("SELECT COUNT(*) FROM chat_messages")
-            total_messages = cursor.fetchone()[0]
-            
-            # Count sessions today
-            cursor.execute("""
-                SELECT COUNT(*) FROM chat_sessions 
-                WHERE DATE(created_at) = DATE('now')
-            """)
-            sessions_today = cursor.fetchone()[0]
+        # Get statistics with better error handling
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                
+                # Count knowledge base items
+                cursor.execute("SELECT COUNT(*) FROM knowledge_base WHERE is_active = 1")
+                kb_count = cursor.fetchone()[0]
+                
+                # Count total messages
+                cursor.execute("SELECT COUNT(*) FROM chat_messages")
+                total_messages = cursor.fetchone()[0]
+                
+                # Count sessions today
+                cursor.execute("""
+                    SELECT COUNT(*) FROM chat_sessions 
+                    WHERE DATE(created_at) = DATE('now')
+                """)
+                sessions_today = cursor.fetchone()[0]
+                
+                # Get last knowledge base update
+                cursor.execute("""
+                    SELECT MAX(last_updated) FROM knowledge_base WHERE is_active = 1
+                """)
+                last_kb_update = cursor.fetchone()[0]
+                
+        except Exception as e:
+            st.error(f"Database error: {str(e)}")
+            kb_count = 0
+            total_messages = 0
+            sessions_today = 0
+            last_kb_update = None
         
-         # Display stats
+        # Display stats with better formatting
         st.markdown(f"""
         <div class="stats-container">
             <div class="stat-item">
@@ -691,17 +809,40 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
+        # Show last update time
+        if last_kb_update:
+            try:
+                if isinstance(last_kb_update, str):
+                    update_time = datetime.fromisoformat(last_kb_update.replace('Z', '+00:00'))
+                else:
+                    update_time = last_kb_update
+                time_ago = datetime.now() - update_time
+                
+                if time_ago.days > 0:
+                    time_str = f"{time_ago.days} days ago"
+                elif time_ago.seconds > 3600:
+                    time_str = f"{time_ago.seconds // 3600} hours ago"
+                else:
+                    time_str = f"{time_ago.seconds // 60} minutes ago"
+                    
+                st.caption(f"Last KB update: {time_str}")
+            except:
+                st.caption("Last KB update: Unknown")
+        else:
+            st.caption("Knowledge base is empty")
+        
         st.markdown("---")
         
         # Control buttons
         if st.button("🔄 Refresh Knowledge Base", use_container_width=True):
             st.cache_data.clear()
             refresh_knowledge_base()
-            st.success("Knowledge base refreshed!")
+            st.rerun()
         
         if st.button("🗑️ Clear Chat History", use_container_width=True):
             st.session_state.messages = []
             st.session_state.chat_session_id = db_manager.create_session()
+            st.success("Chat history cleared!")
             st.rerun()
         
         if st.button("📊 Export Chat History", use_container_width=True):
@@ -715,7 +856,20 @@ def main():
                     file_name=f"rmit_chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
-
+            else:
+                st.warning("No chat history to export.")
+        
+        # Manual refresh button for testing
+        if st.button("🧪 Force Refresh KB (Test)", use_container_width=True):
+            st.cache_data.clear()
+            with st.expander("Debug Refresh Process", expanded=True):
+                refresh_knowledge_base_no_cache()
+                # Show current KB count
+                current_kb = db_manager.get_knowledge_base()
+                st.write(f"Current KB items: {len(current_kb)}")
+                if current_kb:
+                    st.write("Sample KB item:", current_kb[0]['title'][:100])
+            st.rerun()
 
     # Main chat interface
     st.markdown("## 💬 Chat with RMIT Connect Helper")
