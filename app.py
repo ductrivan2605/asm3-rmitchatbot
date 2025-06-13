@@ -239,13 +239,18 @@ class RMITWebScraper:
     def get_sitemap_urls(self, keywords: List[str] = None) -> List[str]:
         """Extract relevant URLs from RMIT sitemap"""
         try:
-            st.write("🔍 Attempting to fetch sitemap...")
             response = requests.get(self.sitemap_url, headers=self.headers, timeout=10)
             response.raise_for_status()
-            st.write(f"✅ Sitemap fetched successfully, size: {len(response.content)} bytes")
             
-            root = ET.fromstring(response.content)
-            urls = []
+            # Try to parse as XML
+            try:
+                root = ET.fromstring(response.content)
+            except ET.ParseError:
+                # If XML parsing fails, try to extract URLs with regex
+                import re
+                url_pattern = r'<loc>(https://[^<]+)</loc>'
+                urls = re.findall(url_pattern, response.text)
+                return self._filter_urls(urls, keywords)
             
             # Default keywords for RMIT student services
             if not keywords:
@@ -254,33 +259,67 @@ class RMITWebScraper:
                     'academic', 'fee', 'deadline', 'campus', 'international'
                 ]
             
-            # Extract URLs containing relevant keywords
+            # Extract URLs - try different namespace patterns
             all_urls = []
-            for url_elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}url'):
-                loc_elem = url_elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
-                if loc_elem is not None:
-                    all_urls.append(loc_elem.text)
             
-            st.write(f"📊 Found {len(all_urls)} total URLs in sitemap")
+            # Try different XML namespace patterns
+            namespaces = [
+                '{http://www.sitemaps.org/schemas/sitemap/0.9}',
+                '{http://www.sitemaps.org/schemas/sitemap/0.9}',
+                ''  # No namespace
+            ]
             
-            # Filter URLs by keywords
-            for url in all_urls:
-                if any(keyword in url.lower() for keyword in keywords):
-                    urls.append(url)
+            for ns in namespaces:
+                try:
+                    for url_elem in root.findall(f'.//{ns}url'):
+                        loc_elem = url_elem.find(f'{ns}loc')
+                        if loc_elem is not None and loc_elem.text:
+                            all_urls.append(loc_elem.text)
+                    
+                    if all_urls:  # If we found URLs, break
+                        break
+                        
+                    # Also try direct loc elements
+                    for loc_elem in root.findall(f'.//{ns}loc'):
+                        if loc_elem.text:
+                            all_urls.append(loc_elem.text)
+                    
+                    if all_urls:
+                        break
+                        
+                except Exception:
+                    continue
             
-            st.write(f"🎯 Filtered to {len(urls)} relevant URLs")
+            # If still no URLs found, try simple text extraction
+            if not all_urls:
+                import re
+                url_pattern = r'https://www\.rmit\.edu\.au[^\s<>"\']+'
+                all_urls = re.findall(url_pattern, response.text)
             
-            # If no URLs found with keywords, use fallback
-            if not urls:
-                st.warning("No URLs found with keywords, using fallback URLs")
-                return self._get_fallback_urls()
-            
-            return urls[:10]  # Limit to first 10 relevant URLs
+            return self._filter_urls(all_urls, keywords)
             
         except Exception as e:
-            st.error(f"Could not fetch sitemap: {str(e)}")
-            st.info("Using fallback URLs instead")
+            # Silent fallback - no error messages during automatic refresh
             return self._get_fallback_urls()
+    
+    def _filter_urls(self, all_urls: List[str], keywords: List[str]) -> List[str]:
+        """Filter URLs by keywords"""
+        if not keywords:
+            keywords = [
+                'student', 'enrol', 'course', 'program', 'study',
+                'academic', 'fee', 'deadline', 'campus', 'international'
+            ]
+        
+        filtered_urls = []
+        for url in all_urls:
+            if any(keyword in url.lower() for keyword in keywords):
+                filtered_urls.append(url)
+        
+        # If no filtered URLs, return some fallback URLs
+        if not filtered_urls:
+            return self._get_fallback_urls()
+        
+        return filtered_urls[:10]  # Limit to first 10
     
     def _get_fallback_urls(self) -> List[str]:
         """Fallback URLs if sitemap fails"""
@@ -289,14 +328,21 @@ class RMITWebScraper:
             "https://www.rmit.edu.au/enrolment",
             "https://www.rmit.edu.au/students/my-course/important-dates",
             "https://www.rmit.edu.au/students/support-services/study-support",
-            "https://research.rmit.edu.au",
+            "https://www.rmit.edu.au/students/support-services/academic-support",
             "https://www.rmit.edu.au/study-with-us/levels-of-study/undergraduate-study",
-            "https://www.rmit.edu.au/study-with-us/levels-of-study/postgraduate-study"
+            "https://www.rmit.edu.au/study-with-us/levels-of-study/postgraduate-study",
+            "https://www.rmit.edu.au/students/student-essentials/fees-and-payments",
+            "https://www.rmit.edu.au/students/student-essentials/important-dates",
+            "https://www.rmit.edu.au/about/schools-colleges"
         ]
     
     def scrape_page(self, url: str) -> Dict:
         """Scrape individual RMIT page"""
         try:
+            # Add a small delay to make the process visible
+            import time
+            time.sleep(0.5)  # Half second delay per page
+            
             response = requests.get(url, headers=self.headers, timeout=15)
             response.raise_for_status()
             
@@ -387,14 +433,21 @@ def load_enhanced_knowledge_base() -> List[Dict]:
     # First, try to load from database
     db_knowledge = db_manager.get_knowledge_base()
     
-    # If database is empty or outdated, refresh from web
+    # If database is empty, automatically refresh from web
     if not db_knowledge:
-        st.info("🔄 Knowledge base is empty. Auto-refreshing from RMIT website...")
-        # Don't use cache for this call
-        refresh_knowledge_base_no_cache()
-        db_knowledge = db_manager.get_knowledge_base()
-    elif should_refresh_knowledge():
-        st.info("🔄 Knowledge base is outdated (>6 hours). Consider refreshing.")
+        # Create a placeholder for the initialization message
+        init_placeholder = st.empty()
+        
+        with init_placeholder:
+            with st.spinner("Initializing knowledge base from RMIT website..."):
+                refresh_knowledge_base_no_cache()
+                db_knowledge = db_manager.get_knowledge_base()
+        
+        # Clear the initialization message after completion
+        init_placeholder.empty()
+    
+    # Don't show outdated message during normal operation
+    # The outdated check will be handled by the manual refresh button
     
     return db_knowledge
 
@@ -437,14 +490,13 @@ def refresh_knowledge_base_no_cache():
         urls = scraper.get_sitemap_urls()
         
         if not urls:
-            st.error("No URLs found to scrape. Using fallback URLs.")
             urls = scraper._get_fallback_urls()
         
         success_count = 0
         
-        for i, url in enumerate(urls):
+        for url in urls:
             try:
-                # Scrape page
+                # Scrape page (now includes delay)
                 page_data = scraper.scrape_page(url)
                 
                 if page_data['success'] and len(page_data['content']) > 100:
@@ -459,8 +511,7 @@ def refresh_knowledge_base_no_cache():
                     if result != "duplicate":
                         success_count += 1
                 
-            except Exception as url_error:
-                st.warning(f"Error scraping {url}: {str(url_error)}")
+            except Exception:
                 continue
         
         if success_count > 0:
@@ -473,32 +524,41 @@ def refresh_knowledge_base_no_cache():
 
 def refresh_knowledge_base():
     """Refresh knowledge base from RMIT website with UI feedback"""
-    # Create a placeholder for the entire refresh process
-    refresh_placeholder = st.empty()
+    # Create a single container for all refresh UI
+    refresh_container = st.container()
     
-    try:
-        with refresh_placeholder.container():
-            st.info("🔄 Starting knowledge base refresh...")
-            
+    with refresh_container:
+        st.info("🔄 Starting knowledge base refresh...")
+        
+        # Create progress elements
+        progress_placeholder = st.empty()
+        status_placeholder = st.empty()
+        
+        try:
             # Get relevant URLs from sitemap
             urls = scraper.get_sitemap_urls()
             
             if not urls:
-                st.error("No URLs found to scrape. Using fallback URLs.")
                 urls = scraper._get_fallback_urls()
+                status_placeholder.warning("Using fallback URLs")
+                import time
+                time.sleep(1)  # Show warning for a moment
             
-            st.info(f"Found {len(urls)} URLs to scrape...")
+            total_urls = len(urls)
+            status_placeholder.info(f"Found {total_urls} URLs to scrape")
+            import time
+            time.sleep(1)  # Show info for a moment
             
-            # Create progress tracking
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # Progress tracking
             success_count = 0
             
             for i, url in enumerate(urls):
+                # Update progress
+                progress = (i + 1) / total_urls
+                progress_placeholder.progress(progress, text=f"Processing {i+1}/{total_urls}: {url.split('/')[-1][:30]}...")
+                
                 try:
-                    status_text.text(f"Scraping ({i+1}/{len(urls)}): {url[:60]}...")
-                    
-                    # Scrape page
+                    # Scrape page (includes built-in delay)
                     page_data = scraper.scrape_page(url)
                     
                     if page_data['success'] and len(page_data['content']) > 100:
@@ -512,36 +572,34 @@ def refresh_knowledge_base():
                         
                         if result != "duplicate":
                             success_count += 1
-                            status_text.text(f"✅ Saved: {page_data['title'][:50]}...")
-                        else:
-                            status_text.text(f"⚠️ Duplicate content skipped")
-                    else:
-                        status_text.text(f"❌ Failed to scrape meaningful content")
-                    
-                    # Update progress bar
-                    progress_bar.progress((i + 1) / len(urls))
-                    
-                except Exception as url_error:
-                    st.warning(f"Error scraping {url}: {str(url_error)}")
-                    status_text.text(f"❌ Error with: {url[:50]}...")
+                
+                except Exception:
                     continue
             
-            # Final status
+            # Clear progress and show final result
+            progress_placeholder.empty()
+            
             if success_count > 0:
-                st.success(f"✅ Knowledge base updated with {success_count} new items!")
+                status_placeholder.success(f"✅ Knowledge base updated with {success_count} new items!")
                 # Clear the cache to force reload
                 st.cache_data.clear()
+                # Set a flag to indicate successful refresh
+                st.session_state.kb_just_refreshed = True
             else:
-                st.warning("⚠️ No new knowledge items were added (all content may be duplicates)")
+                status_placeholder.warning("⚠️ No new knowledge items were added (all content may be duplicates)")
+                # Still set refresh flag even if no new items (refresh was attempted)
+                st.session_state.kb_just_refreshed = True
+            
+            # Auto-clear the refresh container after 3 seconds
+            import time
+            time.sleep(3)
+            refresh_container.empty()
         
-        # Clear the refresh interface after a delay
-        import time
-        time.sleep(3)
-        refresh_placeholder.empty()
-        
-    except Exception as e:
-        refresh_placeholder.empty()
-        st.error(f"Error refreshing knowledge base: {str(e)}")
+        except Exception as e:
+            progress_placeholder.empty()
+            status_placeholder.error(f"Error refreshing knowledge base: {str(e)}")
+            time.sleep(3)
+            refresh_container.empty()
 
 # === Question Relevance Check === #
 def is_rmit_related(question: str) -> bool:
@@ -809,7 +867,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
-        # Show last update time
+        # Show last update time and outdated warning only in sidebar
         if last_kb_update:
             try:
                 if isinstance(last_kb_update, str):
@@ -826,6 +884,16 @@ def main():
                     time_str = f"{time_ago.seconds // 60} minutes ago"
                     
                 st.caption(f"Last KB update: {time_str}")
+                
+                # Show outdated warning only if not recently refreshed
+                is_outdated = should_refresh_knowledge()
+                recently_refreshed = st.session_state.get('kb_just_refreshed', False)
+                
+                if is_outdated and not recently_refreshed:
+                    st.warning("⚠️ Knowledge base is outdated (>6 hours)")
+                elif recently_refreshed:
+                    st.success("✅ Knowledge base recently updated")
+                    
             except:
                 st.caption("Last KB update: Unknown")
         else:
@@ -835,6 +903,9 @@ def main():
         
         # Control buttons
         if st.button("🔄 Refresh Knowledge Base", use_container_width=True):
+            # Clear the refresh flag before starting
+            if 'kb_just_refreshed' in st.session_state:
+                del st.session_state.kb_just_refreshed
             st.cache_data.clear()
             refresh_knowledge_base()
             st.rerun()
@@ -860,16 +931,16 @@ def main():
                 st.warning("No chat history to export.")
         
         # Manual refresh button for testing
-        if st.button("🧪 Force Refresh KB (Test)", use_container_width=True):
-            st.cache_data.clear()
-            with st.expander("Debug Refresh Process", expanded=True):
-                refresh_knowledge_base_no_cache()
-                # Show current KB count
-                current_kb = db_manager.get_knowledge_base()
-                st.write(f"Current KB items: {len(current_kb)}")
-                if current_kb:
-                    st.write("Sample KB item:", current_kb[0]['title'][:100])
-            st.rerun()
+        # if st.button("🧪 Force Refresh KB (Test)", use_container_width=True):
+        #     st.cache_data.clear()
+        #     with st.expander("Debug Refresh Process", expanded=True):
+        #         refresh_knowledge_base_no_cache()
+        #         # Show current KB count
+        #         current_kb = db_manager.get_knowledge_base()
+        #         st.write(f"Current KB items: {len(current_kb)}")
+        #         if current_kb:
+        #             st.write("Sample KB item:", current_kb[0]['title'][:100])
+        #     st.rerun()
 
     # Main chat interface
     st.markdown("## 💬 Chat with RMIT Connect Helper")
